@@ -39,6 +39,7 @@ import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -77,7 +78,12 @@ fun HomeScreen(c: Catalog, progress: Progress, nav: Nav) {
     var query by rememberSaveable { mutableStateOf("") }
     val week = c.parashaByKey[c.week]
     val weekLessons = remember(c) { c.byParasha[c.week].orEmpty().sortedByDescending { it.p } }
-    val newest = remember(c) { c.lessons.sortedByDescending { it.p }.take(14) }
+    // the library by Hebrew year: "Novo! 5787" (since Rosh HaShaná) first, then every year it has
+    val yearCounts = remember(c) { c.lessons.filter { it.y > 0 }.groupingBy { it.y }.eachCount() }
+    val years = remember(c) { yearCounts.keys.sortedDescending() }
+    var year by rememberSaveable { mutableIntStateOf(0) }
+    val shownYear = if (year == 0) years.firstOrNull() ?: 0 else year
+    val ofYear = remember(c, shownYear) { c.lessons.filter { it.y == shownYear }.sortedByDescending { it.p } }
     val recent = remember(c) { progress.recent().mapNotNull { c.lessonById[it] }.take(10) }
     val topRavs = remember(c) { c.ravs.sortedByDescending { c.byRav[it.slug]?.size ?: 0 }.take(16) }
     val hits = remember(c, query) {
@@ -157,8 +163,22 @@ fun HomeScreen(c: Catalog, progress: Progress, nav: Nav) {
                 }
             }
         }
-        item { SectionTitle("Aulas novas") }
-        items(newest, key = { "n" + it.id }) { l -> LessonRow(c, l, onOpen = nav.lesson) }
+        item { SectionTitle("Por ano") }
+        stickyHeader(key = "years") {
+            Column(Modifier.background(p.paper)) {
+                YearTabs(years, shownYear, yearCounts, { year = it })
+                HorizontalDivider(color = p.line)
+            }
+        }
+        item(key = "yhead$shownYear") {
+            Text(
+                if (shownYear == thisHebYear()) "${ofYear.size} aulas novas desde Rosh HaShaná $shownYear" else "${ofYear.size} aulas de $shownYear",
+                style = MaterialTheme.typography.bodySmall,
+                color = p.muted,
+                modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 10.dp, bottom = 2.dp),
+            )
+        }
+        items(ofYear, key = { "y" + it.id }) { l -> Box(Modifier.animateItemPlacement()) { LessonRow(c, l, onOpen = nav.lesson) } }
     }
 }
 
@@ -303,7 +323,11 @@ fun RavScreen(c: Catalog, slug: String, progress: Progress, nav: Nav) {
     val p = LocalPalette.current
     val r = c.ravBySlug[slug] ?: return
     val ls = c.byRav[slug].orEmpty()
-    val modules = remember(c, slug) { c.modulesOf(ls) }
+    // the modules can be narrowed to one Hebrew year ("Todos" = every year)
+    val ravYearCounts = remember(c, slug) { ls.filter { it.y > 0 }.groupingBy { it.y }.eachCount() }
+    val ravYears = remember(c, slug) { ravYearCounts.keys.sortedDescending() }
+    var ravYear by rememberSaveable(slug) { mutableIntStateOf(0) }
+    val modules = remember(c, slug, ravYear) { c.modulesOf(if (ravYear == 0) ls else ls.filter { it.y == ravYear }) }
     var bioOpen by rememberSaveable { mutableStateOf(false) }
     val open = remember { mutableStateOf(setOf(modules.firstOrNull()?.first ?: "")) }
     val first = remember(c, slug) { progress.recent().firstNotNullOfOrNull { id -> ls.firstOrNull { it.id == id } } ?: modules.firstOrNull()?.second?.firstOrNull() }
@@ -348,6 +372,18 @@ fun RavScreen(c: Catalog, slug: String, progress: Progress, nav: Nav) {
                     }
                 }
             }
+            if (ravYears.size > 1) {
+                stickyHeader(key = "ravyears") {
+                    Column(Modifier.background(p.paper).padding(top = 10.dp)) {
+                        YearTabs(ravYears, ravYear, ravYearCounts, { y ->
+                            ravYear = y
+                            // a chosen year opens its modules at once
+                            if (y != 0) open.value = c.modulesOf(ls.filter { it.y == y }).map { it.first }.toSet()
+                        }, all = true)
+                        HorizontalDivider(color = p.line)
+                    }
+                }
+            }
             modules.forEach { (name, xs) ->
                 val isOpen = name in open.value
                 item(key = "m$name") {
@@ -368,7 +404,7 @@ fun RavScreen(c: Catalog, slug: String, progress: Progress, nav: Nav) {
                     xs.forEachIndexed { i, l ->
                         item(key = "l$name${l.id}") {
                             val d = progress.duration(l.id).takeIf { it > 0 } ?: l.d.toFloat()
-                            LessonRow(c, l, number = i + 1, showRav = false, progress = progress.position(l.id) / d.coerceAtLeast(1f), onOpen = nav.lesson)
+                            Box(Modifier.animateItemPlacement()) { LessonRow(c, l, number = i + 1, showRav = false, progress = progress.position(l.id) / d.coerceAtLeast(1f), onOpen = nav.lesson) }
                         }
                     }
                 }

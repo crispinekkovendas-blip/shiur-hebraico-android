@@ -23,6 +23,8 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
@@ -153,4 +155,62 @@ fun HebrewText(text: String, size: Int, color: Color, modifier: Modifier = Modif
         textAlign = align,
         style = MaterialTheme.typography.bodyLarge.copy(textDirection = TextDirection.Rtl, lineHeight = (size * 1.35f).sp),
     )
+}
+
+/**
+ * Year tabs (2026-10-15): one pill per Hebrew year the lessons have, newest first ("Novo! 5787" for
+ * this year), optionally "Todos" first. The selected pill slides its colour in; the row scrolls the
+ * selection into view. Our own pills, not a system dropdown.
+ */
+@Composable
+fun YearTabs(
+    years: List<Int>,
+    selected: Int,
+    counts: Map<Int, Int>,
+    onSelect: (Int) -> Unit,
+    modifier: Modifier = Modifier,
+    all: Boolean = false,
+) {
+    val p = LocalPalette.current
+    val state = androidx.compose.foundation.lazy.rememberLazyListState()
+    val tabs = (if (all) listOf(0) else emptyList()) + years
+    androidx.compose.runtime.LaunchedEffect(selected) {
+        val i = tabs.indexOf(selected)
+        if (i >= 0) state.animateScrollToItem((i - 1).coerceAtLeast(0))
+    }
+    androidx.compose.foundation.lazy.LazyRow(
+        modifier.fillMaxWidth().background(p.paper),
+        state = state,
+        contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 16.dp, vertical = 8.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        items(tabs.size, key = { tabs[it] }) { i ->
+            val y = tabs[i]
+            val on = y == selected
+            val novo = y == thisHebYear()
+            val accent = if (novo) p.novo else p.tekhelet
+            val bg by androidx.compose.animation.animateColorAsState(if (on) accent else p.surface, androidx.compose.animation.core.tween(220), label = "bg")
+            val fg by androidx.compose.animation.animateColorAsState(if (on) Color.White else (if (novo) p.novo else p.ink), androidx.compose.animation.core.tween(220), label = "fg")
+            val border by androidx.compose.animation.animateColorAsState(if (on) accent else p.line, androidx.compose.animation.core.tween(220), label = "bd")
+            val scale by androidx.compose.animation.core.animateFloatAsState(if (on) 1f else 0.96f, androidx.compose.animation.core.spring(dampingRatio = 0.6f), label = "sc")
+            Row(
+                Modifier
+                    .graphicsLayer { scaleX = scale; scaleY = scale }
+                    .clip(RoundedCornerShape(50))
+                    .background(bg)
+                    .border(1.dp, border, RoundedCornerShape(50))
+                    .clickable { onSelect(y) }
+                    .padding(horizontal = 14.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    when { y == 0 -> "Todos"; novo -> "Novo! $y"; else -> "$y" },
+                    style = MaterialTheme.typography.labelLarge,
+                    color = fg,
+                )
+                val n = if (y == 0) counts.values.sum() else counts[y] ?: 0
+                Text(" $n", style = MaterialTheme.typography.labelSmall, color = fg.copy(alpha = 0.75f))
+            }
+        }
+    }
 }
