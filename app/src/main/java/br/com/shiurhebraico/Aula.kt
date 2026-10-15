@@ -355,7 +355,7 @@ fun AulaScreen(c: Catalog, id: String, repo: Repo, progress: Progress, nav: Nav)
                 )
                 // the web view keeps every touch that lands on it: this layer takes them (play / pause)
                 Box(Modifier.fillMaxSize().clickable(remember { MutableInteractionSource() }, null) { toggle() })
-                AnimatedVisibility(!started, enter = fadeIn(), exit = fadeOut(tween(260))) {
+                Fade(!started) {
                     Box(Modifier.fillMaxSize().clickable { player?.play(); started = true }, contentAlignment = Alignment.Center) {
                         AsyncImage(model = l.thumb, contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
                         Box(Modifier.fillMaxSize().background(Color(0x33000000)))
@@ -368,7 +368,7 @@ fun AulaScreen(c: Catalog, id: String, repo: Repo, progress: Progress, nav: Nav)
                         }
                     }
                 }
-                AnimatedVisibility(ended, enter = fadeIn(), exit = fadeOut()) {
+                Fade(ended) {
                     Column(Modifier.fillMaxSize().background(Color(0xE6101828)).padding(16.dp), verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
                         if (next != null) {
                             Text("PRÓXIMA AULA", style = MaterialTheme.typography.labelSmall, color = Color(0xFFB3CBF3))
@@ -423,6 +423,12 @@ fun AulaScreen(c: Catalog, id: String, repo: Repo, progress: Progress, nav: Nav)
             }
         }
     }
+}
+
+/** an overlay that fades in and out (outside any Column/Row scope) */
+@Composable
+private fun Fade(visible: Boolean, content: @Composable () -> Unit) {
+    AnimatedVisibility(visible, enter = fadeIn(tween(200)), exit = fadeOut(tween(260))) { content() }
 }
 
 @Composable
