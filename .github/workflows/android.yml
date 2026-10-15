@@ -45,15 +45,17 @@ jobs:
           SIGNING_KEY_PASSWORD: ${{ secrets.SIGNING_KEY_PASSWORD }}
         run: |
           chmod +x gradlew
-          ./gradlew --no-daemon assembleDebug
+          ./gradlew --no-daemon assembleRelease assembleDebug
 
-      - name: Name the APK
-        run: cp app/build/outputs/apk/debug/app-debug.apk "shiur-hebraico-${{ github.run_number }}.apk"
+      - name: Name the APKs
+        run: |
+          cp app/build/outputs/apk/release/app-release.apk "shiur-hebraico-${{ github.run_number }}.apk"
+          cp app/build/outputs/apk/debug/app-debug.apk "shiur-hebraico-debug-${{ github.run_number }}.apk"
 
       - uses: actions/upload-artifact@v4
         with:
           name: shiur-hebraico-${{ github.run_number }}
-          path: shiur-hebraico-${{ github.run_number }}.apk
+          path: shiur-hebraico-*${{ github.run_number }}.apk
 
       - name: Publish as the release "latest"
         if: github.ref == 'refs/heads/main'
@@ -61,5 +63,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           cp "shiur-hebraico-${{ github.run_number }}.apk" shiur-hebraico.apk
+          cp "shiur-hebraico-debug-${{ github.run_number }}.apk" shiur-hebraico-debug.apk
           gh release delete latest --yes --cleanup-tag || true
-          gh release create latest shiur-hebraico.apk --title "Shiur Hebraico — build ${{ github.run_number }}" --notes "Instale o APK no Android (permita apps de fontes desconhecidas)." --latest
+          gh release create latest shiur-hebraico.apk shiur-hebraico-debug.apk --title "Shiur Hebraico — build ${{ github.run_number }}" --notes "Instale o APK no Android (permita apps de fontes desconhecidas)." --latest

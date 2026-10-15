@@ -2,9 +2,16 @@
 <resources>
     <style name="Theme.Shiur" parent="android:Theme.Material.Light.NoActionBar">
         <item name="android:windowBackground">@color/paper</item>
-        <item name="android:statusBarColor">@color/paper</item>
-        <item name="android:navigationBarColor">@color/paper</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
         <item name="android:windowLightStatusBar">true</item>
         <item name="android:windowLightNavigationBar">true</item>
+    </style>
+
+    <!-- the native splash: the icon on tekhelet, then the app -->
+    <style name="Theme.Shiur.Starting" parent="Theme.SplashScreen">
+        <item name="windowSplashScreenBackground">@color/tekhelet</item>
+        <item name="windowSplashScreenAnimatedIcon">@drawable/ic_launcher_foreground</item>
+        <item name="postSplashScreenTheme">@style/Theme.Shiur</item>
     </style>
 </resources>

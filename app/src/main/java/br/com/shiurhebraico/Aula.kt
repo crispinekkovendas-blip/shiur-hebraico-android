@@ -1,6 +1,32 @@
 package br.com.shiurhebraico
 
 import android.app.Activity
+import android.Manifest
+import android.content.pm.PackageManager
+import android.os.Build
+import android.view.View
+import android.view.ViewGroup
+import android.webkit.WebView
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.Crossfade
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.requiredSize
+import androidx.compose.runtime.Stable
+import androidx.compose.runtime.derivedStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.platform.LocalView
+import androidx.core.content.ContextCompat
 import android.content.pm.ActivityInfo
 import android.content.res.Configuration
 import androidx.activity.compose.BackHandler
@@ -63,7 +89,6 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextDirection
@@ -93,20 +118,36 @@ private val RATES = listOf(
 
 private val TABS = listOf("Resumo", "Momentos", "Perguntas", "Fontes", "Transcrição")
 
+/** the playing clock: only the small pieces that show it read it, so a tick never redraws the page */
+@Stable
+class PlayClock(t0: Double, d0: Double) {
+    var t by mutableDoubleStateOf(t0)
+    var dur by mutableDoubleStateOf(d0)
+}
+
+private fun View.findWebView(): WebView? = when (this) {
+    is WebView -> this
+    is ViewGroup -> (0 until childCount).firstNotNullOfOrNull { getChildAt(it).findWebView() }
+    else -> null
+}
+
+/** YouTube's own captions off, whatever the account or the video asks (the IFrame API, in the player page) */
+private const val NO_CAPTIONS = "try{player.unloadModule('captions');player.unloadModule('cc');player.setOption('captions','track',{});}catch(e){}"
+
 @Composable
 fun AulaScreen(c: Catalog, id: String, repo: Repo, progress: Progress, nav: Nav) {
     val p = LocalPalette.current
     val l = c.lessonById[id] ?: run { Centered("Aula não encontrada."); return }
     val rav = c.ravBySlug[l.r]
     val ctx = LocalContext.current
+    val view = LocalView.current
     val activity = ctx as? Activity
     val landscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
     var manualFull by remember { mutableStateOf(false) }
     val full = manualFull || landscape
 
     var player by remember { mutableStateOf<YouTubePlayer?>(null) }
-    var t by remember { mutableDoubleStateOf(progress.position(id).toDouble()) }
-    var dur by remember { mutableDoubleStateOf(l.d.toDouble()) }
+    val clock = remember { PlayClock(progress.position(id).toDouble(), l.d.toDouble()) }
     var playing by remember { mutableStateOf(false) }
     var started by remember { mutableStateOf(false) }
     var ended by remember { mutableStateOf(false) }
@@ -119,7 +160,8 @@ fun AulaScreen(c: Catalog, id: String, repo: Repo, progress: Progress, nav: Nav)
     var dubNote by remember { mutableStateOf<String?>(null) }
     val dubber = remember { Dubber(ctx) }
     DisposableEffect(Unit) { onDispose { dubber.shutdown() } }
-    var tab by remember { mutableIntStateOf(0) }
+    var tab by rememberSaveable { mutableIntStateOf(0) }
+    val haptic = LocalHapticFeedback.current
 
     var subs by remember { mutableStateOf<Subs?>(null) }
     var study by remember { mutableStateOf<Study?>(null) }
@@ -139,10 +181,52 @@ fun AulaScreen(c: Catalog, id: String, repo: Repo, progress: Progress, nav: Nav)
         val pl = player ?: return
         pl.seekTo(s.coerceAtLeast(0.0).toFloat())
         dubber.stop()
-        t = s
+        clock.t = s
         if (!playing) pl.play()
         started = true
         ended = false
+    }
+    fun toggle() {
+        val pl = player ?: return
+        if (playing) pl.pause() else { pl.play(); started = true }
+    }
+
+    // Android 13+: ask once for the notification that carries the controls when the screen is off
+    val askNotify = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {}
+    LaunchedEffect(playing) {
+        if (playing && Build.VERSION.SDK_INT >= 33 && !progress.askedNotify &&
+            ContextCompat.checkSelfPermission(ctx, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+        ) {
+            progress.askedNotify = true
+            askNotify.launch(Manifest.permission.POST_NOTIFICATIONS)
+        }
+    }
+
+    // the screen stays on while the lesson plays
+    DisposableEffect(playing) {
+        view.keepScreenOn = playing
+        onDispose { view.keepScreenOn = false }
+    }
+
+    // the media notification and lock-screen controls: listening goes on with the screen off
+    DisposableEffect(player) {
+        PlayerBridge.onPlay = { player?.play() }
+        PlayerBridge.onPause = { player?.pause() }
+        PlayerBridge.onBack10 = { seek(clock.t - 10) }
+        PlayerBridge.onFwd10 = { seek(clock.t + 10) }
+        onDispose {}
+    }
+    LaunchedEffect(playing, started) {
+        if (started) PlaybackService.update(ctx, l.title, rav?.name ?: "Shiur Hebraico", playing, clock.t)
+    }
+    DisposableEffect(Unit) {
+        onDispose {
+            PlayerBridge.onPlay = null
+            PlayerBridge.onPause = null
+            PlayerBridge.onBack10 = null
+            PlayerBridge.onFwd10 = null
+            PlaybackService.stop(ctx)
+        }
     }
 
     // full screen: landscape, no system bars; back leaves it
@@ -167,7 +251,7 @@ fun AulaScreen(c: Catalog, id: String, repo: Repo, progress: Progress, nav: Nav)
         onDispose {
             activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
             activity?.window?.let { WindowCompat.getInsetsController(it, it.decorView).show(WindowInsetsCompat.Type.systemBars()) }
-            if (t > 5) progress.save(id, t.toFloat(), dur.toFloat())
+            if (clock.t > 5) progress.save(id, clock.t.toFloat(), clock.dur.toFloat())
         }
     }
     BackHandler(enabled = manualFull) { manualFull = false }
@@ -176,11 +260,13 @@ fun AulaScreen(c: Catalog, id: String, repo: Repo, progress: Progress, nav: Nav)
     LaunchedEffect(playing) {
         while (playing) {
             delay(5000)
-            if (t > 5) progress.save(id, t.toFloat(), dur.toFloat())
+            if (clock.t > 5) progress.save(id, clock.t.toFloat(), clock.dur.toFloat())
         }
     }
 
-    val cur = subs?.let { cueAt(it.cues, t) } ?: -1
+    // the line under the voice changes every few seconds, not every tick
+    val cur by remember { derivedStateOf { subs?.let { cueAt(it.cues, clock.t) } ?: -1 } }
+    val momentNow by remember { derivedStateOf { study?.moments?.indexOfLast { it.t <= clock.t } ?: -1 } }
     val dubbing = dub && lang != "he"
     LaunchedEffect(dubbing, lang, player) {
         player?.setVolume(if (dubbing) 15 else 100)
@@ -204,38 +290,56 @@ fun AulaScreen(c: Catalog, id: String, repo: Repo, progress: Progress, nav: Nav)
         }
     }
 
-    val lifecycle = LocalLifecycleOwner.current.lifecycle
+    val onLang: (String) -> Unit = { lang = it; progress.lang = it; haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove) }
+    val onDub: () -> Unit = { dub = !dub; progress.dub = dub; haptic.performHapticFeedback(HapticFeedbackType.LongPress) }
+    val onRate: () -> Unit = { rate = (rate + 1) % RATES.size; player?.setPlaybackRate(RATES[rate].second) }
+
     Column(Modifier.fillMaxSize().background(if (full) Color.Black else p.paper).then(if (full) Modifier else Modifier.statusBarsPadding())) {
         // ── the video ── (always the first child, so the player survives the switch to full screen)
-        Box(if (full) Modifier.fillMaxSize() else Modifier.fillMaxWidth().aspectRatio(16f / 9f)) {
-            Box(Modifier.fillMaxSize().background(Color.Black)) {
+        BoxWithConstraints(if (full) Modifier.fillMaxSize() else Modifier.fillMaxWidth().aspectRatio(16f / 9f)) {
+            // YouTube draws its title strip and logo at the top and bottom of its frame: the frame is
+            // the video's own 16:9 plus 120 dp, so those land in the band we clip away
+            val frameW = minOf(maxWidth, maxHeight * 16f / 9f)
+            val frameH = frameW * 9f / 16f
+            Box(Modifier.fillMaxSize().background(Color.Black).clipToBounds(), contentAlignment = Alignment.Center) {
                 AndroidView(
-                    modifier = Modifier.fillMaxSize(),
+                    modifier = Modifier.requiredSize(frameW, frameH + 120.dp),
                     factory = { vctx ->
                         YouTubePlayerView(vctx).apply {
                             enableAutomaticInitialization = false
-                            lifecycle.addObserver(this)
+                            // keeps playing with the screen off (the media notification holds the app)
+                            enableBackgroundPlayback(true)
+                            val yt = this
                             val options = IFramePlayerOptions.Builder(vctx).controls(0).rel(0).ivLoadPolicy(3).ccLoadPolicy(0).build()
                             initialize(
                                 object : AbstractYouTubePlayerListener() {
                                     override fun onReady(youTubePlayer: YouTubePlayer) {
                                         player = youTubePlayer
                                         youTubePlayer.cueVideo(id, progress.position(id).let { if (it > 5) it - 2 else 0f })
+                                        yt.findWebView()?.evaluateJavascript(NO_CAPTIONS, null)
                                     }
 
                                     override fun onCurrentSecond(youTubePlayer: YouTubePlayer, second: Float) {
-                                        if (dragging == null) t = second.toDouble()
+                                        if (dragging == null) clock.t = second.toDouble()
                                     }
 
                                     override fun onVideoDuration(youTubePlayer: YouTubePlayer, duration: Float) {
-                                        if (duration > 0) dur = duration.toDouble()
+                                        if (duration > 0) clock.dur = duration.toDouble()
                                     }
 
                                     override fun onStateChange(youTubePlayer: YouTubePlayer, state: PlayerConstants.PlayerState) {
                                         playing = state == PlayerConstants.PlayerState.PLAYING
-                                        if (playing) { started = true; ended = false }
-                                        if (state == PlayerConstants.PlayerState.ENDED) { ended = true; progress.save(id, 0f, dur.toFloat()) }
-                                        if (state == PlayerConstants.PlayerState.PAUSED && t > 5) progress.save(id, t.toFloat(), dur.toFloat())
+                                        if (playing) {
+                                            started = true
+                                            ended = false
+                                            yt.findWebView()?.evaluateJavascript(NO_CAPTIONS, null)
+                                        }
+                                        if (state == PlayerConstants.PlayerState.ENDED) { ended = true; progress.save(id, 0f, clock.dur.toFloat()) }
+                                        if (state == PlayerConstants.PlayerState.PAUSED && clock.t > 5) progress.save(id, clock.t.toFloat(), clock.dur.toFloat())
+                                    }
+
+                                    override fun onApiChange(youTubePlayer: YouTubePlayer) {
+                                        yt.findWebView()?.evaluateJavascript(NO_CAPTIONS, null)
                                     }
 
                                     override fun onError(youTubePlayer: YouTubePlayer, error: PlayerConstants.PlayerError) {
@@ -250,15 +354,10 @@ fun AulaScreen(c: Catalog, id: String, repo: Repo, progress: Progress, nav: Nav)
                     onRelease = { it.release() },
                 )
                 // the web view keeps every touch that lands on it: this layer takes them (play / pause)
-                Box(
-                    Modifier.fillMaxSize().clickable(remember { MutableInteractionSource() }, null) {
-                        val pl = player ?: return@clickable
-                        if (playing) pl.pause() else { pl.play(); started = true }
-                    },
-                )
-                if (!started) {
+                Box(Modifier.fillMaxSize().clickable(remember { MutableInteractionSource() }, null) { toggle() })
+                AnimatedVisibility(!started, enter = fadeIn(), exit = fadeOut(tween(260))) {
                     Box(Modifier.fillMaxSize().clickable { player?.play(); started = true }, contentAlignment = Alignment.Center) {
-                        AsyncImage(model = "https://i.ytimg.com/vi/$id/hqdefault.jpg", contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
+                        AsyncImage(model = l.thumb, contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
                         Box(Modifier.fillMaxSize().background(Color(0x33000000)))
                         Box(Modifier.size(68.dp).clip(CircleShape).background(p.tekhelet), contentAlignment = Alignment.Center) {
                             if (player == null) CircularProgressIndicator(color = Color.White, strokeWidth = 2.dp, modifier = Modifier.size(28.dp))
@@ -269,7 +368,7 @@ fun AulaScreen(c: Catalog, id: String, repo: Repo, progress: Progress, nav: Nav)
                         }
                     }
                 }
-                if (ended) {
+                AnimatedVisibility(ended, enter = fadeIn(), exit = fadeOut()) {
                     Column(Modifier.fillMaxSize().background(Color(0xE6101828)).padding(16.dp), verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
                         if (next != null) {
                             Text("PRÓXIMA AULA", style = MaterialTheme.typography.labelSmall, color = Color(0xFFB3CBF3))
@@ -292,31 +391,35 @@ fun AulaScreen(c: Catalog, id: String, repo: Repo, progress: Progress, nav: Nav)
             }
             if (full) {
                 Box(Modifier.align(Alignment.BottomCenter).fillMaxWidth().background(Brush.verticalGradient(listOf(Color.Transparent, Color(0xD9080C16)))).padding(top = 28.dp)) {
-                    Band(line, lang, t, dur, playing, rate, dragging, true, onLang = { lang = it; progress.lang = it }, dub = dub, onDub = { dub = !dub; progress.dub = dub }, onRate = { rate = (rate + 1) % RATES.size; player?.setPlaybackRate(RATES[rate].second) },
-                        onDrag = { dragging = it }, onSeek = { f -> dragging = null; seek(f * dur) }, onBack10 = { seek(t - 10) }, onFwd10 = { seek(t + 10) },
-                        onPlay = { if (playing) player?.pause() else { player?.play(); started = true } }, full = true, onFull = { manualFull = false; if (landscape) activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT })
+                    Band(line, lang, clock, playing, rate, dragging, true, onLang, dub, onDub, onRate,
+                        onDrag = { dragging = it }, onSeek = { f -> dragging = null; seek(f * clock.dur) }, onBack10 = { seek(clock.t - 10) }, onFwd10 = { seek(clock.t + 10) },
+                        onPlay = { toggle() }, full = true, onFull = { manualFull = false; if (landscape) activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT })
                 }
             }
         }
         if (full) return@Column
 
         // ── the subtitle band, under the video ──
-        Band(line, lang, t, dur, playing, rate, dragging, subs != null, onLang = { lang = it; progress.lang = it }, dub = dub, onDub = { dub = !dub; progress.dub = dub }, onRate = { rate = (rate + 1) % RATES.size; player?.setPlaybackRate(RATES[rate].second) },
-            onDrag = { dragging = it }, onSeek = { f -> dragging = null; seek(f * dur) }, onBack10 = { seek(t - 10) }, onFwd10 = { seek(t + 10) },
-            onPlay = { if (playing) player?.pause() else { player?.play(); started = true } }, full = false, onFull = { manualFull = true })
+        Band(line, lang, clock, playing, rate, dragging, subs != null, onLang, dub, onDub, onRate,
+            onDrag = { dragging = it }, onSeek = { f -> dragging = null; seek(f * clock.dur) }, onBack10 = { seek(clock.t - 10) }, onFwd10 = { seek(clock.t + 10) },
+            onPlay = { toggle() }, full = false, onFull = { manualFull = true })
 
-        dubNote?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = p.novo, modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp)) }
+        AnimatedVisibility(dubNote != null) {
+            Text(dubNote ?: "", style = MaterialTheme.typography.bodySmall, color = p.novo, modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp))
+        }
 
         // ── the study ──
-        ChipRow(TABS.mapIndexed { i, s -> s to (i == tab) }, { tab = it }, Modifier.fillMaxWidth().background(p.paper).padding(vertical = 8.dp))
+        ChipRow(TABS.mapIndexed { i, s -> s to (i == tab) }, { tab = it; haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove) }, Modifier.fillMaxWidth().background(p.paper).padding(vertical = 8.dp))
         HorizontalDivider(color = p.line)
-        Box(Modifier.weight(1f).fillMaxWidth()) {
-            when (tab) {
-                0 -> Resumo(c, l, rav, study, next, nav)
-                1 -> Momentos(study, t, ::seek)
-                2 -> Perguntas(study, ::seek)
-                3 -> Fontes(study, ::seek)
-                else -> Transcricao(subs, cur, lang, loadError, ::seek)
+        Crossfade(tab, Modifier.weight(1f).fillMaxWidth(), animationSpec = tween(180), label = "tab") { k ->
+            Box(Modifier.fillMaxSize()) {
+                when (k) {
+                    0 -> Resumo(c, l, rav, study, next, nav)
+                    1 -> Momentos(study, momentNow, ::seek)
+                    2 -> Perguntas(study, ::seek)
+                    3 -> Fontes(study, ::seek)
+                    else -> Transcricao(subs, cur, lang, loadError, ::seek)
+                }
             }
         }
     }
@@ -338,8 +441,7 @@ private fun Pill(text: String, icon: androidx.compose.ui.graphics.vector.ImageVe
 private fun Band(
     line: String,
     lang: String,
-    t: Double,
-    dur: Double,
+    clock: PlayClock,
     playing: Boolean,
     rate: Int,
     dragging: Float?,
@@ -359,35 +461,32 @@ private fun Band(
     val bg = if (full) Color.Transparent else Color(0xFF0D1626)
     Column(Modifier.fillMaxWidth().background(bg).padding(start = 12.dp, end = 12.dp, top = 10.dp, bottom = 4.dp)) {
         Box(Modifier.fillMaxWidth().heightIn(min = if (full) 44.dp else 62.dp), contentAlignment = Alignment.Center) {
-            Text(
-                line,
-                color = Color.White,
-                fontFamily = if (lang == "he") Serif else Sans,
-                fontSize = if (lang == "he") 20.sp else 18.sp,
-                fontWeight = FontWeight.Medium,
-                lineHeight = 25.sp,
-                textAlign = TextAlign.Center,
-                maxLines = 3,
-                overflow = TextOverflow.Ellipsis,
-                style = MaterialTheme.typography.bodyLarge.copy(textDirection = if (lang == "he") TextDirection.Rtl else TextDirection.Ltr),
-            )
+            AnimatedContent(line, transitionSpec = { fadeIn(tween(120)) togetherWith fadeOut(tween(90)) }, label = "line") { text ->
+                Text(
+                    text,
+                    color = Color.White,
+                    fontFamily = if (lang == "he") Serif else Sans,
+                    fontSize = if (lang == "he") 20.sp else 18.sp,
+                    fontWeight = FontWeight.Medium,
+                    lineHeight = 25.sp,
+                    textAlign = TextAlign.Center,
+                    maxLines = 3,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.fillMaxWidth(),
+                    style = MaterialTheme.typography.bodyLarge.copy(textDirection = if (lang == "he") TextDirection.Rtl else TextDirection.Ltr),
+                )
+            }
             if (!hasSubs) CircularProgressIndicator(color = Color(0x88FFFFFF), strokeWidth = 2.dp, modifier = Modifier.size(18.dp))
         }
         Row(verticalAlignment = Alignment.CenterVertically) {
             CtlIcon(Icons.Filled.Replay10, "Voltar 10 segundos", onBack10)
             Box(Modifier.size(44.dp).clip(CircleShape).background(Color.White).clickable(onClick = onPlay), contentAlignment = Alignment.Center) {
-                Icon(if (playing) Icons.Filled.Pause else Icons.Filled.PlayArrow, if (playing) "Pausar" else "Assistir", tint = Color(0xFF0D1626), modifier = Modifier.size(28.dp))
+                Crossfade(playing, animationSpec = tween(150), label = "pp") { on ->
+                    Icon(if (on) Icons.Filled.Pause else Icons.Filled.PlayArrow, if (on) "Pausar" else "Assistir", tint = Color(0xFF0D1626), modifier = Modifier.size(28.dp))
+                }
             }
             CtlIcon(Icons.Filled.Forward10, "Avançar 10 segundos", onFwd10)
-            val frac = dragging ?: (if (dur > 0) (t / dur).toFloat() else 0f)
-            Slider(
-                value = frac.coerceIn(0f, 1f),
-                onValueChange = onDrag,
-                onValueChangeFinished = { onSeek(dragging ?: frac) },
-                colors = SliderDefaults.colors(thumbColor = Color.White, activeTrackColor = Color(0xFF86AAEA), inactiveTrackColor = Color(0x44FFFFFF)),
-                modifier = Modifier.weight(1f).padding(horizontal = 6.dp),
-            )
-            Text(clock(if (dragging != null) dragging * dur else t), color = Color(0xCCFFFFFF), style = MaterialTheme.typography.labelSmall)
+            TimeBar(clock, dragging, onDrag, onSeek, Modifier.weight(1f))
             Text(
                 "${RATES[rate].first.toString().removeSuffix(".0")}×",
                 color = Color.White,
@@ -397,8 +496,9 @@ private fun Band(
             CtlIcon(if (full) Icons.Filled.FullscreenExit else Icons.Filled.Fullscreen, "Tela cheia", onFull)
         }
         Row(Modifier.fillMaxWidth().padding(bottom = 4.dp), horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically) {
+            val dubBg by animateColorAsState(if (dub) Color(0xFF86AAEA) else Color.Transparent, tween(200), label = "dub")
             Row(
-                Modifier.padding(end = 6.dp).clip(RoundedCornerShape(50)).background(if (dub) Color(0xFF86AAEA) else Color.Transparent)
+                Modifier.padding(end = 6.dp).clip(RoundedCornerShape(50)).background(dubBg)
                     .border(1.dp, if (dub) Color(0xFF86AAEA) else Color(0x55FFFFFF), RoundedCornerShape(50)).clickable(onClick = onDub).padding(horizontal = 10.dp, vertical = 4.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
@@ -406,14 +506,32 @@ private fun Band(
                 Text("Dublagem", color = if (dub) Color(0xFF0D1626) else Color(0xCCFFFFFF), style = MaterialTheme.typography.labelMedium, modifier = Modifier.padding(start = 4.dp))
             }
             listOf("pt" to "PT", "en" to "EN", "he" to "עב").forEach { (k, label) ->
+                val on = lang == k
+                val chipBg by animateColorAsState(if (on) Color.White else Color.Transparent, tween(200), label = "lang$k")
                 Text(
                     label,
-                    color = if (lang == k) Color(0xFF0D1626) else Color(0xCCFFFFFF),
+                    color = if (on) Color(0xFF0D1626) else Color(0xCCFFFFFF),
                     style = MaterialTheme.typography.labelMedium,
-                    modifier = Modifier.padding(horizontal = 3.dp).clip(RoundedCornerShape(50)).background(if (lang == k) Color.White else Color.Transparent).clickable { onLang(k) }.padding(horizontal = 12.dp, vertical = 5.dp),
+                    modifier = Modifier.padding(horizontal = 3.dp).clip(RoundedCornerShape(50)).background(chipBg).clickable { onLang(k) }.padding(horizontal = 12.dp, vertical = 5.dp),
                 )
             }
         }
+    }
+}
+
+/** the seek bar and the time: the only part of the band that follows every tick */
+@Composable
+private fun TimeBar(clock: PlayClock, dragging: Float?, onDrag: (Float) -> Unit, onSeek: (Float) -> Unit, modifier: Modifier) {
+    val frac = dragging ?: (if (clock.dur > 0) (clock.t / clock.dur).toFloat() else 0f)
+    Row(modifier, verticalAlignment = Alignment.CenterVertically) {
+        Slider(
+            value = frac.coerceIn(0f, 1f),
+            onValueChange = onDrag,
+            onValueChangeFinished = { onSeek(dragging ?: frac) },
+            colors = SliderDefaults.colors(thumbColor = Color.White, activeTrackColor = Color(0xFF86AAEA), inactiveTrackColor = Color(0x44FFFFFF)),
+            modifier = Modifier.weight(1f).padding(horizontal = 6.dp),
+        )
+        Text(clock(if (dragging != null) dragging * clock.dur else clock.t), color = Color(0xCCFFFFFF), style = MaterialTheme.typography.labelSmall)
     }
 }
 
@@ -486,9 +604,8 @@ private fun Loading(study: Study?, content: @Composable (Study) -> Unit) {
 }
 
 @Composable
-private fun Momentos(study: Study?, t: Double, seek: (Double) -> Unit) = Loading(study) { s ->
+private fun Momentos(study: Study?, now: Int, seek: (Double) -> Unit) = Loading(study) { s ->
     val p = LocalPalette.current
-    val now = s.moments.indexOfLast { it.t <= t }
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(vertical = 8.dp)) {
         itemsIndexed(s.moments) { i, m ->
             Row(

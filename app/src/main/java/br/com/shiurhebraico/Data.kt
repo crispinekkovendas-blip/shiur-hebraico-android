@@ -195,6 +195,9 @@ class Progress(ctx: Context) {
     var dub: Boolean
         get() = sp.getBoolean("dub", false)
         set(v) = sp.edit().putBoolean("dub", v).apply()
+    var askedNotify: Boolean
+        get() = sp.getBoolean("askedNotify", false)
+        set(v) = sp.edit().putBoolean("askedNotify", v).apply()
 }
 
 /** Rosh HaShaná of each year: the Hebrew year a lesson was uploaded in */
