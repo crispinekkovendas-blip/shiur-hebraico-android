@@ -192,6 +192,9 @@ class Progress(ctx: Context) {
     var lang: String
         get() = sp.getString("lang", "pt")!!
         set(v) = sp.edit().putString("lang", v).apply()
+    var dub: Boolean
+        get() = sp.getBoolean("dub", false)
+        set(v) = sp.edit().putBoolean("dub", v).apply()
 }
 
 /** Rosh HaShaná of each year: the Hebrew year a lesson was uploaded in */

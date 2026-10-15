@@ -33,6 +33,7 @@ import androidx.compose.material.icons.filled.Forward10
 import androidx.compose.material.icons.filled.Fullscreen
 import androidx.compose.material.icons.filled.FullscreenExit
 import androidx.compose.material.icons.filled.Pause
+import androidx.compose.material.icons.filled.RecordVoiceOver
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Replay
 import androidx.compose.material.icons.filled.Replay10
@@ -113,6 +114,11 @@ fun AulaScreen(c: Catalog, id: String, repo: Repo, progress: Progress, nav: Nav)
     var dragging by remember { mutableStateOf<Float?>(null) }
     var failed by remember { mutableStateOf(false) }
     var lang by remember { mutableStateOf(progress.lang) }
+    // the dub: the phone's voice reads the translation, the rabbi turned down under it
+    var dub by remember { mutableStateOf(progress.dub) }
+    var dubNote by remember { mutableStateOf<String?>(null) }
+    val dubber = remember { Dubber(ctx) }
+    DisposableEffect(Unit) { onDispose { dubber.shutdown() } }
     var tab by remember { mutableIntStateOf(0) }
 
     var subs by remember { mutableStateOf<Subs?>(null) }
@@ -132,6 +138,7 @@ fun AulaScreen(c: Catalog, id: String, repo: Repo, progress: Progress, nav: Nav)
     fun seek(s: Double) {
         val pl = player ?: return
         pl.seekTo(s.coerceAtLeast(0.0).toFloat())
+        dubber.stop()
         t = s
         if (!playing) pl.play()
         started = true
@@ -174,6 +181,14 @@ fun AulaScreen(c: Catalog, id: String, repo: Repo, progress: Progress, nav: Nav)
     }
 
     val cur = subs?.let { cueAt(it.cues, t) } ?: -1
+    val dubbing = dub && lang != "he"
+    LaunchedEffect(dubbing, lang, player) {
+        player?.setVolume(if (dubbing) 15 else 100)
+        if (!dubbing) dubber.stop()
+        dubNote = if (dubbing && !dubber.setLang(lang)) "Este celular não tem a voz ${if (lang == "en") "em inglês" else "em português"}: instale em Configurações → Texto para fala." else null
+    }
+    LaunchedEffect(playing) { if (!playing) dubber.stop() }
+
     val line = subs?.let { s ->
         if (cur < 0) "" else when (lang) {
             "he" -> s.cues[cur].he
@@ -181,6 +196,13 @@ fun AulaScreen(c: Catalog, id: String, repo: Repo, progress: Progress, nav: Nav)
             else -> s.pt?.getOrNull(cur) ?: s.en?.getOrNull(cur) ?: ""
         }
     } ?: ""
+    LaunchedEffect(cur) {
+        val s = subs
+        if (dubbing && playing && s != null && cur >= 0) {
+            val nextStart = s.cues.getOrNull(cur + 1)?.start ?: s.cues[cur].end
+            dubber.say(line, nextStart - s.cues[cur].start)
+        }
+    }
 
     val lifecycle = LocalLifecycleOwner.current.lifecycle
     Column(Modifier.fillMaxSize().background(if (full) Color.Black else p.paper).then(if (full) Modifier else Modifier.statusBarsPadding())) {
@@ -270,7 +292,7 @@ fun AulaScreen(c: Catalog, id: String, repo: Repo, progress: Progress, nav: Nav)
             }
             if (full) {
                 Box(Modifier.align(Alignment.BottomCenter).fillMaxWidth().background(Brush.verticalGradient(listOf(Color.Transparent, Color(0xD9080C16)))).padding(top = 28.dp)) {
-                    Band(line, lang, t, dur, playing, rate, dragging, true, onLang = { lang = it; progress.lang = it }, onRate = { rate = (rate + 1) % RATES.size; player?.setPlaybackRate(RATES[rate].second) },
+                    Band(line, lang, t, dur, playing, rate, dragging, true, onLang = { lang = it; progress.lang = it }, dub = dub, onDub = { dub = !dub; progress.dub = dub }, onRate = { rate = (rate + 1) % RATES.size; player?.setPlaybackRate(RATES[rate].second) },
                         onDrag = { dragging = it }, onSeek = { f -> dragging = null; seek(f * dur) }, onBack10 = { seek(t - 10) }, onFwd10 = { seek(t + 10) },
                         onPlay = { if (playing) player?.pause() else { player?.play(); started = true } }, full = true, onFull = { manualFull = false; if (landscape) activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT })
                 }
@@ -279,9 +301,11 @@ fun AulaScreen(c: Catalog, id: String, repo: Repo, progress: Progress, nav: Nav)
         if (full) return@Column
 
         // ── the subtitle band, under the video ──
-        Band(line, lang, t, dur, playing, rate, dragging, subs != null, onLang = { lang = it; progress.lang = it }, onRate = { rate = (rate + 1) % RATES.size; player?.setPlaybackRate(RATES[rate].second) },
+        Band(line, lang, t, dur, playing, rate, dragging, subs != null, onLang = { lang = it; progress.lang = it }, dub = dub, onDub = { dub = !dub; progress.dub = dub }, onRate = { rate = (rate + 1) % RATES.size; player?.setPlaybackRate(RATES[rate].second) },
             onDrag = { dragging = it }, onSeek = { f -> dragging = null; seek(f * dur) }, onBack10 = { seek(t - 10) }, onFwd10 = { seek(t + 10) },
             onPlay = { if (playing) player?.pause() else { player?.play(); started = true } }, full = false, onFull = { manualFull = true })
+
+        dubNote?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = p.novo, modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp)) }
 
         // ── the study ──
         ChipRow(TABS.mapIndexed { i, s -> s to (i == tab) }, { tab = it }, Modifier.fillMaxWidth().background(p.paper).padding(vertical = 8.dp))
@@ -321,6 +345,8 @@ private fun Band(
     dragging: Float?,
     hasSubs: Boolean,
     onLang: (String) -> Unit,
+    dub: Boolean,
+    onDub: () -> Unit,
     onRate: () -> Unit,
     onDrag: (Float) -> Unit,
     onSeek: (Float) -> Unit,
@@ -370,8 +396,16 @@ private fun Band(
             )
             CtlIcon(if (full) Icons.Filled.FullscreenExit else Icons.Filled.Fullscreen, "Tela cheia", onFull)
         }
-        Row(Modifier.fillMaxWidth().padding(bottom = 4.dp), horizontalArrangement = Arrangement.Center) {
-            listOf("pt" to "Português", "en" to "English", "he" to "עברית").forEach { (k, label) ->
+        Row(Modifier.fillMaxWidth().padding(bottom = 4.dp), horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically) {
+            Row(
+                Modifier.padding(end = 6.dp).clip(RoundedCornerShape(50)).background(if (dub) Color(0xFF86AAEA) else Color.Transparent)
+                    .border(1.dp, if (dub) Color(0xFF86AAEA) else Color(0x55FFFFFF), RoundedCornerShape(50)).clickable(onClick = onDub).padding(horizontal = 10.dp, vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(Icons.Filled.RecordVoiceOver, "Dublagem", tint = if (dub) Color(0xFF0D1626) else Color.White, modifier = Modifier.size(15.dp))
+                Text("Dublagem", color = if (dub) Color(0xFF0D1626) else Color(0xCCFFFFFF), style = MaterialTheme.typography.labelMedium, modifier = Modifier.padding(start = 4.dp))
+            }
+            listOf("pt" to "PT", "en" to "EN", "he" to "עב").forEach { (k, label) ->
                 Text(
                     label,
                     color = if (lang == k) Color(0xFF0D1626) else Color(0xCCFFFFFF),
