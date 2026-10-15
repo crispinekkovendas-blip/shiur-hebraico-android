@@ -1,0 +1,12 @@
+.gradle/
+build/
+local.properties
+.idea/
+*.iml
+.DS_Store
+captures/
+.kotlin/
+# the signing key lives outside the repo (C:\Users\admin\.emunah-keys) and in the GitHub secrets
+*.jks
+*.keystore
+*.properties.local
