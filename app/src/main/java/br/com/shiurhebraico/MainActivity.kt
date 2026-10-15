@@ -59,6 +59,25 @@ import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
+import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.material.icons.filled.Book
+import androidx.compose.material.icons.filled.MenuBook
+import androidx.compose.material.icons.outlined.Book
+import androidx.compose.material.icons.outlined.MenuBook
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.ViewModelProvider
+import androidx.lifecycle.viewmodel.compose.viewModel
+import br.com.shiurhebraico.core.AppContainer
+import br.com.shiurhebraico.core.theme.EmunahTheme
+import br.com.shiurhebraico.parasha.PSection
+import br.com.shiurhebraico.parasha.ParashaListViewModel
+import br.com.shiurhebraico.parasha.ParashaViewModel
+import br.com.shiurhebraico.parasha.ui.ParashaListScreen
+import br.com.shiurhebraico.parasha.ui.ParashaScreen as StudyParashaScreen
+import br.com.shiurhebraico.siddur.SiddurHomeViewModel
+import br.com.shiurhebraico.siddur.SiddurReaderViewModel
+import br.com.shiurhebraico.siddur.ui.SiddurHomeScreen
+import br.com.shiurhebraico.siddur.ui.SiddurReaderScreen
 import coil.ImageLoader
 import coil.ImageLoaderFactory
 import coil.disk.DiskCache
@@ -68,6 +87,8 @@ import kotlinx.coroutines.launch
 class ShiurApp : Application(), ImageLoaderFactory {
     val repo by lazy { Repo(this) }
     val progress by lazy { Progress(this) }
+    /** the Torah study and the Siddur (the main site's) */
+    val study by lazy { AppContainer(this) }
 
     /** stills and portraits fade in, and stay cached on disk between visits */
     override fun newImageLoader(): ImageLoader = ImageLoader.Builder(this)
@@ -85,7 +106,7 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         val app = application as ShiurApp
         setContent {
-            ShiurTheme { Root(app.repo, app.progress) }
+            ShiurTheme { Root(app.repo, app.progress, app.study) }
         }
     }
 }
@@ -95,13 +116,20 @@ private data class RootTab(val label: String, val on: ImageVector, val off: Imag
 private val ROOT_TABS = listOf(
     RootTab("Início", Icons.Filled.Home, Icons.Outlined.Home, "home"),
     RootTab("Mestres", Icons.Filled.People, Icons.Outlined.People, "mestres"),
-    RootTab("Parashiot", Icons.Filled.AutoStories, Icons.Outlined.AutoStories, "parashiot"),
+    RootTab("Aulas", Icons.Filled.AutoStories, Icons.Outlined.AutoStories, "parashiot"),
+    RootTab("Torá", Icons.Filled.MenuBook, Icons.Outlined.MenuBook, "tora"),
+    RootTab("Sidur", Icons.Filled.Book, Icons.Outlined.Book, "sidur"),
 )
+
+private fun <T : ViewModel> factory(make: () -> T) = object : ViewModelProvider.Factory {
+    @Suppress("UNCHECKED_CAST")
+    override fun <V : ViewModel> create(modelClass: Class<V>): V = make() as V
+}
 
 private const val EASE = 300
 
 @Composable
-private fun Root(repo: Repo, progress: Progress) {
+private fun Root(repo: Repo, progress: Progress, study: AppContainer) {
     val p = LocalPalette.current
     val haptic = LocalHapticFeedback.current
     var catalog by remember { mutableStateOf<Catalog?>(null) }
@@ -147,6 +175,7 @@ private fun Root(repo: Repo, progress: Progress) {
             rav = { push("rav/$it") },
             parasha = { k -> push("parasha/$k", replaceKind = "parasha/") },
             back = { pop() },
+            estudo = { k -> push("estudo/$k", replaceKind = "estudo/") },
         )
     }
 
@@ -184,6 +213,26 @@ private fun Root(repo: Repo, progress: Progress) {
                                     r == "tab/home" -> HomeScreen(c, progress, nav)
                                     r == "tab/mestres" -> MestresScreen(c, nav)
                                     r == "tab/parashiot" -> ParashiotScreen(c, nav)
+                                    r == "tab/tora" -> EmunahTheme {
+                                        val list: ParashaListViewModel = viewModel(factory = factory { ParashaListViewModel(study) })
+                                        Box(Modifier.fillMaxSize().statusBarsPadding()) { ParashaListScreen(list) { nav.estudo(it) } }
+                                    }
+                                    r == "tab/sidur" -> EmunahTheme {
+                                        val home: SiddurHomeViewModel = viewModel(factory = factory { SiddurHomeViewModel(study) })
+                                        Box(Modifier.fillMaxSize().statusBarsPadding()) { SiddurHomeScreen(home) { slug, part -> push("sidur/$slug/$part") } }
+                                    }
+                                    r.startsWith("estudo/") -> EmunahTheme {
+                                        val vm: ParashaViewModel = viewModel(key = "par-$arg", factory = factory { ParashaViewModel(study, arg, PSection.INICIO) })
+                                        Box(Modifier.fillMaxSize().statusBarsPadding()) {
+                                            StudyParashaScreen(vm, onBack = { pop() }, onOpenSiddur = { slug -> push("sidur/$slug/0") })
+                                        }
+                                    }
+                                    r.startsWith("sidur/") -> EmunahTheme {
+                                        val slug = arg.substringBeforeLast('/')
+                                        val part = arg.substringAfterLast('/').toIntOrNull() ?: 0
+                                        val vm: SiddurReaderViewModel = viewModel(key = "sid-$slug-$part", factory = factory { SiddurReaderViewModel(study, slug, part) })
+                                        Box(Modifier.fillMaxSize().statusBarsPadding()) { SiddurReaderScreen(vm) { pop() } }
+                                    }
                                     r.startsWith("aula/") -> AulaScreen(c, arg, repo, progress, nav)
                                     r.startsWith("rav/") -> RavScreen(c, arg, progress, nav)
                                     else -> ParashaScreen(c, arg, nav)
@@ -201,7 +250,7 @@ private fun Root(repo: Repo, progress: Progress) {
                                         tab = i
                                     },
                                     icon = { Icon(if (tab == i) t.on else t.off, t.label) },
-                                    label = { Text(t.label) },
+                                    label = { Text(t.label, maxLines = 1) },
                                     colors = NavigationBarItemDefaults.colors(selectedIconColor = p.tekhelet, selectedTextColor = p.tekhelet, indicatorColor = p.wash, unselectedIconColor = p.muted, unselectedTextColor = p.muted),
                                 )
                             }

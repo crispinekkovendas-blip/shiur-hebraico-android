@@ -28,6 +28,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
+import androidx.compose.material.icons.filled.MenuBook
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.HorizontalDivider
@@ -59,6 +60,8 @@ class Nav(
     val rav: (String) -> Unit,
     val parasha: (String) -> Unit,
     val back: () -> Unit,
+    /** the parashá's study (Torah, Rashi, Ramban, Or HaChaim, Midrash, Zohar, Halachá, Shabat) */
+    val estudo: (String) -> Unit = {},
 )
 
 @Composable
@@ -299,6 +302,15 @@ fun ParashaScreen(c: Catalog, key: String, nav: Nav) {
                     HebrewText(par?.he ?: m?.he ?: "", 40, p.ink, weight = FontWeight.Bold)
                     Text(par?.tr ?: "", style = MaterialTheme.typography.bodyMedium, color = p.muted)
                     Text("${ls.size} aulas", style = MaterialTheme.typography.labelLarge, color = p.tekhelet, modifier = Modifier.padding(top = 6.dp))
+                    if (par != null) {
+                        Row(
+                            Modifier.padding(top = 12.dp).clip(RoundedCornerShape(50)).background(p.tekhelet).clickable { nav.estudo(par.key) }.padding(horizontal = 18.dp, vertical = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Icon(Icons.Filled.MenuBook, null, tint = p.onTekhelet, modifier = Modifier.size(18.dp))
+                            Text("Estudar a parashá", color = p.onTekhelet, style = MaterialTheme.typography.labelLarge, modifier = Modifier.padding(start = 8.dp))
+                        }
+                    }
                 }
                 HorizontalDivider(color = p.line)
             }

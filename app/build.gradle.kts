@@ -89,6 +89,8 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.8.1")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("io.coil-kt:coil-compose:2.6.0")
+    // halachic times (the Parashá's Shabat times, the Siddur's "Agora")
+    implementation("com.kosherjava:zmanim:2.5.0")
 
     // YouTube's own IFrame player (YouTube requires its embed); our controls and subtitles around it
     implementation("com.pierfrancescosoffritti.androidyoutubeplayer:core:13.0.0")
